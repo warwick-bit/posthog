@@ -21070,7 +21070,7 @@ export namespace Schemas {
       key: string;
       /** Prose content for prompt injection. */
       content: string;
-      /** `agent_inference` (TTL'd, agent-writable) or `human_confirmed`. */
+      /** Always `agent_inference` in v1; reserved for future human-confirmed entries. */
       authority: string;
       /** Free-form tags the agent uses to scope search; matched via Postgres array overlap. */
       tags: string[];
@@ -21085,7 +21085,7 @@ export namespace Schemas {
        */
       updated_at: string | null;
       /**
-       * ISO-8601 expiry; null only on `human_confirmed` entries.
+       * ISO-8601 expiry timestamp (null = no expiry, reserved for future use).
        * @nullable
        */
       expires_at: string | null;
@@ -23833,7 +23833,7 @@ export namespace Schemas {
     export interface SignalAgentRunSummary {
       /** UUID of the run row. */
       run_id: string;
-      /** Canonical skill name the run executed (e.g. `signals-agent-scout`). */
+      /** Canonical skill name the run executed (e.g. `signals-agent-general`). */
       skill_name: string;
       /** Skill version snapshotted at run start. */
       skill_version: number;
@@ -34396,7 +34396,7 @@ export namespace Schemas {
        */
       ttl_days?: number;
       /**
-       * Run that authored this memory; persisted as `created_by_run_id` for lineage.
+       * Run that authored this memory; persisted as `created_by_run_id` for lineage. Must reference a run on this same project — cross-project run UUIDs are rejected.
        * @nullable
        */
       run_id?: string | null;
@@ -45219,7 +45219,7 @@ export namespace Schemas {
     offset?: number;
     };
 
-    export type SignalsAgentHarnessMemoryListParams = {
+    export type SignalsAgentMemoryListParams = {
     /**
      * Include expired `agent_inference` entries (default false). Use for audit/debug only.
      */
@@ -45244,7 +45244,7 @@ export namespace Schemas {
     text?: string;
     };
 
-    export type SignalsAgentHarnessRunsListParams = {
+    export type SignalsAgentRunsListParams = {
     /**
      * Max rows to return (default 20, hard cap 100).
      * @minimum 1
