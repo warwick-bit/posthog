@@ -366,6 +366,5 @@ class TestAgentHarnessProjectProfileAPI(APIBaseTest):
             "signal_source_configs",
             "existing_inbox_reports",
             "recent_dashboards",
-            "popular_insights",
             "top_events",
         }
