@@ -8,8 +8,12 @@ dataclasses. Never return ORM instances or import DRF.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Any
+
 from products.wizard.backend.facade.contracts import UpsertWizardSessionInput, WizardSessionDTO
-from products.wizard.backend.logic import sessions
+from products.wizard.backend.logic import pubsub, sessions
 
 
 def upsert(params: UpsertWizardSessionInput) -> WizardSessionDTO:
@@ -30,3 +34,18 @@ def list_for_team(
     skill_id: str | None = None,
 ) -> list[WizardSessionDTO]:
     return sessions.list_sessions(team_id, workflow_id=workflow_id, skill_id=skill_id)
+
+
+@contextmanager
+def subscribe_to_updates(
+    team_id: int,
+    workflow_id: str,
+    skill_id: str | None = None,
+) -> Iterator[Any]:
+    """Subscribe to wizard-session pub/sub updates for SSE fanout.
+
+    Exposed through the facade so the presentation layer doesn't import
+    from `logic` directly (enforced by import-linter).
+    """
+    with pubsub.subscribe(team_id, workflow_id, skill_id) as ps:
+        yield ps
