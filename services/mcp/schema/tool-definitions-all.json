@@ -1901,7 +1901,7 @@
         }
     },
     "experiment-results-get": {
-        "description": "Get experiment metric results and exposure data in one call. Each row in `metrics.primary.results` and `metrics.secondary.results` carries a self-describing `metric` summary: `uuid`, `name` (the label users see in the experiment UI), `metric_type`, `goal`, and `source` — `inline` for metrics defined on the experiment, `shared` for metrics attached via a saved metric. For `shared` rows, `saved_metric_id` and `saved_metric_name` identify the underlying saved metric; both are `null` for `inline` rows. Rows are ordered to match the experiment UI (`primary_metrics_ordered_uuids` / `secondary_metrics_ordered_uuids`). A row whose underlying metric query failed is kept with `data: null` so positions stay aligned with the ordered UUIDs — check `data === null` to detect failures. The raw source surfaces (`experiment.metrics`, `experiment.metrics_secondary`, `experiment.saved_metrics`) are preserved on the response for callers who want to audit them, but you do not need to reconcile them yourself — the result rows already merge inline and shared. Only works with new experiments (not legacy `ExperimentTrendsQuery` / `ExperimentFunnelsQuery`).",
+        "description": "Get experiment metric results and exposure data in one call. Each row in `metrics.primary.results` and `metrics.secondary.results` carries a self-describing `metric` summary: `uuid`, `name` (the label users see in the experiment UI), `metric_type`, `goal`, and `source` — `inline` for metrics defined on the experiment, `shared` for metrics attached via a saved metric. For `shared` rows, `saved_metric_id` and `saved_metric_name` identify the underlying saved metric; both are `null` for `inline` rows. Rows are ordered to match the experiment UI (`primary_metrics_ordered_uuids` / `secondary_metrics_ordered_uuids`). A row whose underlying metric query failed is kept with `data: null` so positions stay aligned with the ordered UUIDs — check `data === null` to detect failures. The raw source surfaces (`experiment.metrics`, `experiment.metrics_secondary`, `experiment.saved_metrics`) are preserved on the response for callers who want to audit them, but you do not need to reconcile them yourself — the result rows already merge inline and shared. UI-only bulk fields are stripped from each `data` payload: `clickhouse_sql`, `hogql`, the legacy `insight` visualization payload, and the per-funnel-step session samples — `step_sessions` is removed from `baseline`, each `variant_results` entry, and from `baseline` / `variants[]` inside every `breakdown_results` entry. Statistical fields (`sum`, `sum_squares`, `step_counts`, `number_of_samples`, `credible_intervals`, per-breakdown stats, etc.) are preserved. Only works with new experiments (not legacy `ExperimentTrendsQuery` / `ExperimentFunnelsQuery`).",
         "category": "Experiments",
         "feature": "experiments",
         "summary": "Get experiment metric and exposure results with self-describing per-metric metadata.",
@@ -2481,6 +2481,51 @@
             "idempotentHint": true,
             "openWorldHint": true,
             "readOnlyHint": true
+        }
+    },
+    "feature-flags-bulk-delete-create": {
+        "description": "Soft-delete multiple feature flags in one call. Provide either `ids` (explicit list of flag IDs) OR `filters` (same shape as the list endpoint, e.g., search, active, type, tags), but not both. WARNING: `filters` can match an unbounded number of flags. Preview matches via the list endpoint before calling this with `filters`, and prefer explicit `ids` whenever the user has named specific flags. Flags linked to active experiments, early access features, or that other flags depend on are skipped and reported in `errors`. Returns `deleted` (with each flag's rollout state at deletion time) and `errors` arrays.",
+        "category": "Feature flags",
+        "feature": "flags",
+        "summary": "Bulk delete feature flags",
+        "title": "Bulk delete feature flags",
+        "required_scopes": ["feature_flag:write"],
+        "new_mcp": true,
+        "annotations": {
+            "destructiveHint": true,
+            "idempotentHint": false,
+            "openWorldHint": true,
+            "readOnlyHint": false
+        }
+    },
+    "feature-flags-bulk-keys-create": {
+        "description": "Resolve feature flag IDs to their string keys in one call. Pass `ids` as a list of integer flag IDs. Returns `keys` as a mapping of stringified ID to key for the IDs that exist in this project. Useful when you have IDs from another tool (e.g., dependent flags, scheduled changes) and need the keys for downstream calls.",
+        "category": "Feature flags",
+        "feature": "flags",
+        "summary": "Look up feature flag keys by ID",
+        "title": "Look up feature flag keys by ID",
+        "required_scopes": ["feature_flag:read"],
+        "new_mcp": true,
+        "annotations": {
+            "destructiveHint": false,
+            "idempotentHint": true,
+            "openWorldHint": true,
+            "readOnlyHint": true
+        }
+    },
+    "feature-flags-bulk-update-tags-create": {
+        "description": "Add, remove, or replace tags on multiple feature flags in one call. Provide `ids` (up to 500), an `action` ('add', 'remove', or 'set'), and a list of tag names. Returns `updated` (per-flag final tag list) and `skipped` (flags missing or without edit permission, with reason).",
+        "category": "Feature flags",
+        "feature": "flags",
+        "summary": "Bulk update tags on feature flags",
+        "title": "Bulk update tags on feature flags",
+        "required_scopes": ["feature_flag:write"],
+        "new_mcp": true,
+        "annotations": {
+            "destructiveHint": true,
+            "idempotentHint": true,
+            "openWorldHint": true,
+            "readOnlyHint": false
         }
     },
     "feature-flags-copy-flags-create": {
