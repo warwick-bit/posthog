@@ -36826,6 +36826,26 @@ export namespace Schemas {
       message?: string;
     }
 
+    export interface TestInterviewSnapshot {
+      /** When the most recent test call completed (i.e., when Vapi delivered the end-of-call report). */
+      completed_at: string;
+      /** Full transcript of the most recent test call. Empty if Vapi delivered no transcript. */
+      transcript: string;
+      /** AI-generated summary of the most recent test call. Empty if no summary was generated. */
+      summary: string;
+      /** URL of the recorded audio for the most recent test call, when Vapi provided one. */
+      recording_url: string;
+    }
+
+    export interface TestInterviewLink {
+      /** Public, unauthenticated URL for the synthetic test interviewee on this topic. Stable across calls — derived from the topic UUID; no SharingConfiguration row is stored. */
+      interview_url: string;
+      /** The agent context the voice agent will see during the test call (the topic's agent_context). */
+      agent_context: string;
+      /** Most recent stored test interview for this topic, or null if no test call has completed yet. */
+      latest_test_interview: TestInterviewSnapshot | null;
+    }
+
     export interface TextReprMetadata {
       event_type?: string;
       event_id?: string;
