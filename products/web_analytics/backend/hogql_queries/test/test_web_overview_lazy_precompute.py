@@ -103,7 +103,8 @@ class TestWebOverviewLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
         assert len(jobs) > 0, "expected at least one precompute job to be created"
 
     @unittest.skip(
-        "Flaky on CI since #59075 — lazy path returns empty rows despite READY job. "
+        "CI-only flake since #59075 (passes 10/10 locally on the CI ClickHouse image) — "
+        "lazy path returns empty rows despite READY job. "
         "Suspected read-after-write visibility on Distributed table, but global "
         "insert_distributed_sync=1 is already set in users-dev.xml. Root cause under investigation."
     )
@@ -348,7 +349,8 @@ class TestWebOverviewLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
         ]
     )
     @unittest.skip(
-        "Flaky on CI since #59075 — same root cause as test_lazy_result_matches_raw_result. "
+        "CI-only flake since #59075 (passes locally on the CI ClickHouse image) — "
+        "same root cause as test_lazy_result_matches_raw_result. "
         "Pacific variant is the most reproducible failure. The previous skip in #59614 was "
         "above @parameterized.expand, so the parameterized variants kept running and failing. "
         "Root cause under investigation."
@@ -359,7 +361,10 @@ class TestWebOverviewLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
         # The class-level `@unittest.skip` doesn't propagate to parameterized-expanded
         # methods on CI's pytest version, so each variant has to opt out by itself.
         # Same root cause as `test_lazy_result_matches_raw_result` (#59075 flakiness).
-        self.skipTest("Flaky on CI since #59075 — same root cause as test_lazy_result_matches_raw_result.")
+        self.skipTest(
+            "CI-only flake since #59075 (passes locally on the CI ClickHouse image) — "
+            "same root cause as test_lazy_result_matches_raw_result."
+        )
         # mypy reads `skipTest` as `NoReturn`, but the test body must remain so
         # the test runs once the underlying flake is fixed.
         self.team.timezone = team_tz  # type: ignore[unreachable]
@@ -447,8 +452,9 @@ class TestWebOverviewLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
     # --- Group C: forward-only pad + compare readiness ---------------------
 
     @unittest.skip(
-        "Flaky on CI since #59075 — same intermittent empty-result pattern as the other "
-        "round-trip tests in this file. Missed by #59614. Root cause under investigation."
+        "CI-only flake since #59075 (passes locally on the CI ClickHouse image) — "
+        "same intermittent empty-result pattern as the other round-trip tests in this file. "
+        "Missed by #59614. Root cause under investigation."
     )
     @freeze_time("2024-01-15T12:00:00Z")
     def test_session_just_after_window_start_attributed_correctly(self):
@@ -510,8 +516,9 @@ class TestWebOverviewLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
         assert result is None, f"expected fall-back to raw when previous precompute not ready, got {result!r}"
 
     @unittest.skip(
-        "Flaky on CI since #59075 — same intermittent empty-result pattern as the other "
-        "round-trip tests in this file. Root cause under investigation."
+        "CI-only flake since #59075 (passes locally on the CI ClickHouse image) — "
+        "same intermittent empty-result pattern as the other round-trip tests in this file. "
+        "Root cause under investigation."
     )
     @freeze_time("2024-01-15T12:00:00Z")
     def test_recomputation_picks_up_late_events_changing_bounce_and_duration(self):

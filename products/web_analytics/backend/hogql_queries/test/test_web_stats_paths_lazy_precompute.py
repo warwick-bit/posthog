@@ -134,7 +134,8 @@ class TestWebStatsPathsLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
         assert len(jobs) > 0, "expected at least one precompute job to be created"
 
     @unittest.skip(
-        "Flaky on CI since #59075 — lazy path returns empty rows despite READY job. "
+        "CI-only flake since #59075 (passes 10/10 locally on the CI ClickHouse image) — "
+        "lazy path returns empty rows despite READY job. "
         "Same root cause as test_web_overview_lazy_precompute.py::test_lazy_result_matches_raw_result. "
         "Suspected read-after-write visibility on Distributed table, but global "
         "insert_distributed_sync=1 is already set in users-dev.xml. Root cause under investigation."
@@ -178,10 +179,10 @@ class TestWebStatsPathsLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
         return out
 
     @unittest.skip(
-        "Flaky on CI since #59075 — lazy path returns empty rows despite READY job, "
-        "so the bounce-rate metric assertion KeyErrors on /a. Same root cause as "
-        "test_lazy_result_matches_raw_result. Re-enable when the read-after-write "
-        "visibility issue is resolved."
+        "CI-only flake since #59075 (passes locally on the CI ClickHouse image) — "
+        "lazy path returns empty rows despite READY job, so the bounce-rate metric "
+        "assertion KeyErrors on /a. Same root cause as test_lazy_result_matches_raw_result. "
+        "Re-enable when the read-after-write visibility issue is resolved."
     )
     @freeze_time("2024-01-15T12:00:00Z")
     def test_bounce_rate_attributed_to_entry_path_only(self):
@@ -357,7 +358,10 @@ class TestWebStatsPathsLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
         # Same flakiness as test_lazy_result_matches_raw_result — lazy returns
         # empty rows despite READY job on CI. Skipped until the read-after-write
         # visibility issue tracked alongside #59075 is resolved.
-        self.skipTest("Flaky on CI since #59075 — lazy path returns empty rows despite READY job.")
+        self.skipTest(
+            "CI-only flake since #59075 (passes locally on the CI ClickHouse image) — "
+            "lazy path returns empty rows despite READY job."
+        )
         # mypy reads `skipTest` as `NoReturn`, but the test body must remain so
         # the test runs once the underlying flake is fixed.
         self.team.timezone = team_tz  # type: ignore[unreachable]
@@ -465,7 +469,10 @@ class TestWebStatsPathsLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
             response = self._run(self._build_query(order_by=[field, direction]))
         assert response.usedLazyPrecompute is True
 
-    @unittest.skip("Flaky on CI since #59075 — same lazy-read read-after-write issue as the parity tests.")
+    @unittest.skip(
+        "CI-only flake since #59075 (passes locally on the CI ClickHouse image) — "
+        "same lazy-read read-after-write issue as the parity tests."
+    )
     @freeze_time("2024-01-15T12:00:00Z")
     def test_compare_period_only_populated_returns_real_previous_bounce(self):
         """When current period has no events but previous does, the lazy path
