@@ -5,14 +5,13 @@ import { LemonButton, LemonInput, LemonTable, LemonTag, Link } from '@posthog/le
 
 import { LemonTableLink } from 'lib/lemon-ui/LemonTable/LemonTableLink'
 import { cn } from 'lib/utils/css-classes'
+import { useMaxTool } from 'scenes/max/useMaxTool'
 import { sceneConfigurations } from 'scenes/scenes'
 import { Scene, SceneExport } from 'scenes/sceneTypes'
 import { urls } from 'scenes/urls'
 
-import { sidePanelStateLogic } from '~/layout/navigation-3000/sidepanel/sidePanelStateLogic'
 import { SceneContent } from '~/layout/scenes/components/SceneContent'
 import { SceneTitleSection } from '~/layout/scenes/components/SceneTitleSection'
-import { SidePanelTab } from '~/types'
 
 import type { UserInterviewSearchResultApi, UserInterviewTopicApi } from './generated/api.schemas'
 import { userInterviewsLogic } from './userInterviewsLogic'
@@ -35,15 +34,18 @@ function targetingLabel(topic: UserInterviewTopicApi): string {
     return parts.length > 0 ? parts.join(' + ') : 'Not set'
 }
 
-const NEW_TOPIC_PROMPT = `!I want to set up a new user research topic. Help me through the process:
+const NEW_TOPIC_PROMPT = `!I want to set up a new user research topic. Help me work through:
+1. What I want to learn — the feature, behavior, or question to research.
+2. Who to interview — let me give you emails or distinct IDs, or help me pick from a cohort.
+3. The interview questions — 3-6 open-ended, conversational prompts in a sensible order.
+Then create the topic using the create_user_interview_topic tool. Don't try to send emails or generate links yourself — once the topic exists I'll do that from the topic page.`
 
-1. First, let's figure out what I want to learn — what feature, behavior, or question I want to research.
-2. Then, help me identify the right users to interview — pick a cohort, find users by behavior, or provide emails directly.
-3. Draft interview questions based on the topic.
-4. Set up the outreach workflow to email each user with their unique interview link.
-5. Once I confirm, trigger the emails — I'll track responses in User research.
-
-Let's start — ask me what I want to learn about.`
+const NEW_TOPIC_SUGGESTIONS = [
+    'Interview recent signups about their onboarding experience',
+    'Talk to power users about what they wish the product did better',
+    'Interview customers who churned in the last 30 days',
+    'Research how teams are using dashboards day-to-day',
+]
 
 function SearchResultCard({ result }: { result: UserInterviewSearchResultApi }): JSX.Element {
     const target = result.topic_id
@@ -94,8 +96,14 @@ function SearchResults({
 export function UserInterviews(): JSX.Element {
     const { topics, topicsLoading, searchQuery, searchResults, searchResultsLoading } = useValues(userInterviewsLogic)
     const { setSearchQuery } = useActions(userInterviewsLogic)
-    const { openSidePanel } = useActions(sidePanelStateLogic)
     const hasSearch = searchQuery.trim().length > 0
+
+    const { openMax } = useMaxTool({
+        identifier: 'create_user_interview_topic',
+        context: {},
+        initialMaxPrompt: NEW_TOPIC_PROMPT,
+        suggestions: NEW_TOPIC_SUGGESTIONS,
+    })
 
     return (
         <SceneContent>
@@ -110,7 +118,8 @@ export function UserInterviews(): JSX.Element {
                         type="primary"
                         icon={<IconSparkles />}
                         data-attr="new-topic"
-                        onClick={() => openSidePanel(SidePanelTab.Max, NEW_TOPIC_PROMPT)}
+                        onClick={() => openMax?.()}
+                        disabledReason={openMax ? undefined : 'PostHog AI is unavailable here'}
                     >
                         New topic
                     </LemonButton>
