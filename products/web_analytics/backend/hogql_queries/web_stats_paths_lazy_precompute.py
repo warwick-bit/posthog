@@ -324,9 +324,16 @@ ENSURE_BUDGET_MS = 120 * 1000
 # doesn't carry the regex string. Cleaning is a chain of nested
 # `replaceRegexpAll` calls (see `apply_path_cleaning`), and ClickHouse
 # aggregate `*Merge` functions remain associative across the GROUP BY change.
+# The SELECT alias is deliberately `breakdown` (not `breakdown_value`) to avoid
+# shadowing the underlying column name. With the same name, HogQL resolves
+# `breakdown_value` in GROUP BY to the SELECT alias (printing without the
+# table qualifier) which then mismatches the SELECT expression's qualified
+# form, and ClickHouse rejects the query with "not under aggregate function
+# and not in GROUP BY keys". The consumer destructures rows positionally, so
+# the alias name does not affect the response shape.
 _READ_SQL_TEMPLATE = f"""
 SELECT
-    {{breakdown_expr}} AS breakdown_value,
+    {{breakdown_expr}} AS breakdown,
     uniqMergeIf(uniq_users_state, and(time_window_start >= {{cur_start}}, time_window_start < {{cur_end}})) AS visitors,
     uniqMergeIf(uniq_users_state, and(time_window_start >= {{prev_start}}, time_window_start < {{prev_end}})) AS previous_visitors,
     sumMergeIf(sum_pageviews_state, and(time_window_start >= {{cur_start}}, time_window_start < {{cur_end}})) AS views,
@@ -337,7 +344,7 @@ FROM posthog.web_stats_paths_preaggregated
 WHERE and(team_id = {{team_id}}, job_id IN {{job_ids}})
 GROUP BY {{breakdown_expr}}
 HAVING or(visitors > 0, previous_visitors > 0)
-ORDER BY visitors DESC, previous_visitors DESC, breakdown_value ASC
+ORDER BY visitors DESC, previous_visitors DESC, breakdown ASC
 LIMIT {READ_MAX_ROWS}
 """
 
