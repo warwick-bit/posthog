@@ -301,12 +301,15 @@ class TestWebStatsPathsLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
         assert PreaggregationJob.objects.filter(team_id=self.team.pk).count() == 0
 
     @freeze_time("2024-01-15T12:00:00Z")
-    def test_path_cleaning_falls_through(self):
-        # Path cleaning is gated out at MVP — incorporating team-level cleaning
-        # rules into the cache key is left for a follow-up.
+    def test_path_cleaning_uses_lazy_path(self):
+        # Path cleaning is applied at READ time, so the precompute is
+        # rule-independent — cleaning rules can change without invalidating
+        # stored rows, and the lazy_computation query_hash doesn't carry the
+        # regex. A path-cleaning query should create a precompute job.
+        self._seed_two_sessions()
         with self._enable_lazy():
             self._run(self._build_query(do_path_cleaning=True))
-        assert PreaggregationJob.objects.filter(team_id=self.team.pk).count() == 0
+        assert PreaggregationJob.objects.filter(team_id=self.team.pk).count() > 0
 
     @freeze_time("2024-01-15T12:00:00Z")
     def test_uuid_session_mode_falls_through(self):

@@ -181,11 +181,11 @@ def _prepend_host_nullif_empty(host_expr: ast.Expr, path_expr: ast.Expr) -> ast.
 def _breakdown_value_expr(runner: "WebStatsTableQueryRunner") -> ast.Expr:
     """URL path (optionally `host`-prefixed) for the per-pathname rows.
 
-    When `doPathCleaning` is on, the cleaning regex is baked into the AST via
-    `runner._apply_path_cleaning`, so the query_hash differs between cleaned
-    and raw — cleaned/raw precomputes coexist as distinct rows and a rule edit
-    naturally produces a new hash (no manual cache invalidation needed)."""
-    path = runner._apply_path_cleaning(ast.Field(chain=["events", "properties", "$pathname"]))
+    Path cleaning is applied at READ time (see `_READ_SQL_TEMPLATE`), not here.
+    Storing raw paths keeps the precompute rule-independent: a team can edit
+    their cleaning rules and the existing precomputed rows remain valid — the
+    next read just groups them by the new cleaned values."""
+    path = ast.Field(chain=["events", "properties", "$pathname"])
     if runner.query.includeHost:
         return _prepend_host_nullif_empty(ast.Field(chain=["events", "properties", "$host"]), path)
     return path
@@ -195,7 +195,7 @@ def _entry_breakdown_value_expr(runner: "WebStatsTableQueryRunner") -> ast.Expr:
     """Entry pathname (optionally `entry_hostname`-prefixed) — must match the
     same shape as `_breakdown_value_expr` so the equality check inside the
     INSERT properly identifies sessions that entered on each path."""
-    path = runner._apply_path_cleaning(ast.Field(chain=["session", "$entry_pathname"]))
+    path = ast.Field(chain=["session", "$entry_pathname"])
     if runner.query.includeHost:
         return _prepend_host_nullif_empty(ast.Field(chain=["session", "$entry_hostname"]), path)
     return path
@@ -317,9 +317,16 @@ ENSURE_BUDGET_MS = 120 * 1000
 # `execute_hogql_query`, so `time_window_start` (stored UTC) is compared
 # directly against the UTC bounds we pass in via `{cur_start}` etc. without
 # HogQL coercing them to the team's local timezone.
+#
+# `breakdown_expr` is the (raw or cleaned) breakdown column. Path cleaning is
+# applied here in the read rather than baked into the precompute, so rule
+# edits don't invalidate stored rows and the lazy_computation query_hash
+# doesn't carry the regex string. Cleaning is a chain of nested
+# `replaceRegexpAll` calls (see `apply_path_cleaning`), and ClickHouse
+# aggregate `*Merge` functions remain associative across the GROUP BY change.
 _READ_SQL_TEMPLATE = f"""
 SELECT
-    breakdown_value AS breakdown_value,
+    {{breakdown_expr}} AS breakdown_value,
     uniqMergeIf(uniq_users_state, and(time_window_start >= {{cur_start}}, time_window_start < {{cur_end}})) AS visitors,
     uniqMergeIf(uniq_users_state, and(time_window_start >= {{prev_start}}, time_window_start < {{prev_end}})) AS previous_visitors,
     sumMergeIf(sum_pageviews_state, and(time_window_start >= {{cur_start}}, time_window_start < {{cur_end}})) AS views,
@@ -328,7 +335,7 @@ SELECT
     avgMergeIf(avg_bounce_state, and(time_window_start >= {{prev_start}}, time_window_start < {{prev_end}})) AS previous_bounce_rate
 FROM posthog.web_stats_paths_preaggregated
 WHERE and(team_id = {{team_id}}, job_id IN {{job_ids}})
-GROUP BY breakdown_value
+GROUP BY {{breakdown_expr}}
 HAVING or(visitors > 0, previous_visitors > 0)
 ORDER BY visitors DESC, previous_visitors DESC, breakdown_value ASC
 LIMIT {READ_MAX_ROWS}
@@ -361,6 +368,7 @@ def execute_read_query(
         "cur_end": ast.Constant(value=current_end_utc),
         "prev_start": ast.Constant(value=prev_start),
         "prev_end": ast.Constant(value=prev_end),
+        "breakdown_expr": runner._apply_path_cleaning(ast.Field(chain=["breakdown_value"])),
     }
 
     # The precomputed `time_window_start` column is UTC; `convertToProjectTimezone`
