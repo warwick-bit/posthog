@@ -404,7 +404,9 @@ class TestWebStatsPathsLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
             ),
         ):
             runner = WebStatsTableQueryRunner(team=self.team, query=self._build_query())
-            result = execute_lazy_precomputed_read(runner)
+            result = execute_lazy_precomputed_read(
+                runner, sort_column="visitors", sort_direction="DESC", limit=11, offset=0
+            )
 
         assert result is None, f"expected fall-back to raw when current precompute not ready, got {result!r}"
 
@@ -430,7 +432,9 @@ class TestWebStatsPathsLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
             ),
         ):
             runner = WebStatsTableQueryRunner(team=self.team, query=self._build_query(compare=True))
-            result = execute_lazy_precomputed_read(runner)
+            result = execute_lazy_precomputed_read(
+                runner, sort_column="visitors", sort_direction="DESC", limit=11, offset=0
+            )
 
         assert result is None, f"expected fall-back to raw when previous precompute not ready, got {result!r}"
 

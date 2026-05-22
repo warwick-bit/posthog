@@ -20,6 +20,7 @@ from prometheus_client import Counter, Histogram
 from posthog.schema import HogQLQueryModifiers, WebAnalyticsOrderByFields, WebStatsBreakdown
 
 from posthog.hogql import ast
+from posthog.hogql.parser import parse_select
 from posthog.hogql.query import execute_hogql_query
 
 from posthog.clickhouse.query_tagging import Feature, Product, tag_queries
@@ -287,16 +288,16 @@ def ensure_web_stats_paths_precomputed(
 
 
 # Returns one row per breakdown_value with (current, previous) period pairs
-# matching the columns produced by `PATH_BOUNCE_QUERY`:
-#   breakdown_value, visitors, prev_visitors, views, prev_views, bounce_rate, prev_bounce_rate
+# plus a fill-fraction column for the bar visualisation:
+#   breakdown_value, visitors, prev_visitors, views, prev_views, bounce_rate,
+#   prev_bounce_rate, fill_fraction
 #
-# The hard `LIMIT` is a defence-in-depth cap on `breakdown_value` cardinality.
-# Teams without path cleaning + query strings in URLs can otherwise produce
-# 100k+ distinct paths per 90-day window; that's a memory/latency hazard for
-# the in-Python sort + paginate downstream. The cap is well above the table
-# tile's user-visible page sizes (typically 10–100 rows) and the ORDER BY puts
-# the high-traffic paths first so what gets dropped is the long tail.
-READ_MAX_ROWS = 10000
+# Sort, paginate, and fill-fraction are all computed in SQL so we read back
+# exactly the page the user is looking at — no in-Python re-sort, no
+# defence-in-depth cardinality cap. `_build_response_from_lazy_rows` just
+# materialises the page directly. Matches v2's
+# `StatsTablePreAggregatedQueryBuilder._fill_fraction` / `_get_order_by`
+# pattern (`stats_table_pre_aggregated.py:515,543`).
 
 # Soft budget for the cumulative `ensure_precomputed` time inside a single
 # request. The framework's default `wait_timeout_seconds` is 180 s per call; a
@@ -306,8 +307,12 @@ READ_MAX_ROWS = 10000
 ENSURE_BUDGET_MS = 120 * 1000
 
 # HogQL read template. `{...}` placeholders are substituted via `parse_select`
-# `placeholders`. `top_level_settings` on `WebStatsPathsPreaggregatedTable`
-# applies `load_balancing="in_order"` (read-your-writes via Approach E in
+# `placeholders`. ORDER BY / LIMIT / OFFSET are NOT in the template — they're
+# attached to the parsed AST in `execute_read_query` so we can build them from
+# `runner.query.orderBy` / `runner.paginator` without string interpolation.
+#
+# `top_level_settings` on `WebStatsPathsPreaggregatedTable` applies
+# `load_balancing="in_order"` (read-your-writes via Approach E in
 # `products/analytics_platform/backend/lazy_computation/CONSISTENCY.md`) and
 # `optimize_skip_unused_shards=1` (shard pruning via the `job_id IN (...)`
 # filter + `sipHash64(job_id)` sharding key) — they flow through the printer
@@ -331,22 +336,79 @@ ENSURE_BUDGET_MS = 120 * 1000
 # form, and ClickHouse rejects the query with "not under aggregate function
 # and not in GROUP BY keys". The consumer destructures rows positionally, so
 # the alias name does not affect the response shape.
-_READ_SQL_TEMPLATE = f"""
+#
+# The outer SELECT wraps the inner aggregation so we can:
+#   - normalise NaN → NULL on bounce_rate (avgMergeIf returns NaN, not NULL,
+#     when no entry sessions contributed; ClickHouse `ORDER BY ... NULLS LAST`
+#     only catches NULL)
+#   - compute `fill_fraction` via `sum(...) OVER ()` against the inner GROUP
+#     BY result (matching v2's `_fill_fraction`)
+_READ_SQL_TEMPLATE = """
 SELECT
-    {{breakdown_expr}} AS breakdown,
-    uniqMergeIf(uniq_users_state, and(time_window_start >= {{cur_start}}, time_window_start < {{cur_end}})) AS visitors,
-    uniqMergeIf(uniq_users_state, and(time_window_start >= {{prev_start}}, time_window_start < {{prev_end}})) AS previous_visitors,
-    sumMergeIf(sum_pageviews_state, and(time_window_start >= {{cur_start}}, time_window_start < {{cur_end}})) AS views,
-    sumMergeIf(sum_pageviews_state, and(time_window_start >= {{prev_start}}, time_window_start < {{prev_end}})) AS previous_views,
-    avgMergeIf(avg_bounce_state, and(time_window_start >= {{cur_start}}, time_window_start < {{cur_end}})) AS bounce_rate,
-    avgMergeIf(avg_bounce_state, and(time_window_start >= {{prev_start}}, time_window_start < {{prev_end}})) AS previous_bounce_rate
-FROM posthog.web_stats_paths_preaggregated
-WHERE and(team_id = {{team_id}}, job_id IN {{job_ids}})
-GROUP BY {{breakdown_expr}}
-HAVING or(visitors > 0, previous_visitors > 0)
-ORDER BY visitors DESC, previous_visitors DESC, breakdown ASC
-LIMIT {READ_MAX_ROWS}
+    breakdown,
+    visitors,
+    previous_visitors,
+    views,
+    previous_views,
+    if(isNaN(raw_bounce), NULL, raw_bounce) AS bounce_rate,
+    if(isNaN(raw_prev_bounce), NULL, raw_prev_bounce) AS previous_bounce_rate,
+    {fill_fraction_expr} AS fill_fraction
+FROM (
+    SELECT
+        {breakdown_expr} AS breakdown,
+        uniqMergeIf(uniq_users_state, and(time_window_start >= {cur_start}, time_window_start < {cur_end})) AS visitors,
+        uniqMergeIf(uniq_users_state, and(time_window_start >= {prev_start}, time_window_start < {prev_end})) AS previous_visitors,
+        sumMergeIf(sum_pageviews_state, and(time_window_start >= {cur_start}, time_window_start < {cur_end})) AS views,
+        sumMergeIf(sum_pageviews_state, and(time_window_start >= {prev_start}, time_window_start < {prev_end})) AS previous_views,
+        avgMergeIf(avg_bounce_state, and(time_window_start >= {cur_start}, time_window_start < {cur_end})) AS raw_bounce,
+        avgMergeIf(avg_bounce_state, and(time_window_start >= {prev_start}, time_window_start < {prev_end})) AS raw_prev_bounce
+    FROM posthog.web_stats_paths_preaggregated
+    WHERE and(team_id = {team_id}, job_id IN {job_ids})
+    GROUP BY {breakdown_expr}
+    HAVING or(visitors > 0, previous_visitors > 0)
+)
 """
+
+
+def _build_order_by(sort_column: str, sort_direction: str) -> list[ast.OrderExpr]:
+    """Build the SQL ORDER BY for the lazy read.
+
+    Sort with explicit NULLS LAST behaviour (`isNull(x) ASC` first), then by
+    the user's requested field/direction, then by the path string for a stable
+    tiebreaker. `bounce_rate` can be NULL (post-`if(isNaN(...), NULL, ...)`
+    coercion in the outer SELECT) when no entry sessions touched a path —
+    those rows must go to the end regardless of direction so the UI's empty
+    cells aren't interleaved with real data.
+    """
+    return [
+        ast.OrderExpr(expr=ast.Call(name="isNull", args=[ast.Field(chain=[sort_column])]), order="ASC"),
+        ast.OrderExpr(expr=ast.Field(chain=[sort_column]), order=sort_direction),  # type: ignore[arg-type]
+        ast.OrderExpr(expr=ast.Field(chain=["breakdown"]), order="ASC"),
+    ]
+
+
+def _fill_fraction_expr(sort_column: str) -> ast.Expr:
+    """SQL expression for the row's bar-fraction. Mirrors v2's `_fill_fraction`:
+    visitors/views are ratio-of-sum over the GROUP BY result; bounce_rate is
+    already a 0..1 fraction so passthrough."""
+    if sort_column == "bounce_rate":
+        # `bounce_rate` may be NULL post-NaN-coercion; the UI tolerates a NULL
+        # fill (renders as no bar) so we don't `coalesce` here.
+        return ast.Field(chain=["bounce_rate"])
+    # `visitors` / `views` are non-negative ints, so `sum(x) OVER ()` is safe;
+    # the denominator is zero only when every row is zero, in which case the
+    # HAVING filter has already dropped those rows.
+    return ast.Call(
+        name="divide",
+        args=[
+            ast.Field(chain=[sort_column]),
+            ast.WindowFunction(
+                name="sum",
+                args=[ast.Field(chain=[sort_column])],
+                over_expr=ast.WindowExpr(),
+            ),
+        ],
+    )
 
 
 def execute_read_query(
@@ -357,11 +419,17 @@ def execute_read_query(
     current_end_utc: datetime,
     previous_start_utc: Optional[datetime],
     previous_end_utc: Optional[datetime],
+    sort_column: str,
+    sort_direction: str,
+    limit: int,
+    offset: int,
 ) -> list:
     """Read the precomputed PATHS rows via HogQL.
 
     Returns the raw `response.results` (list of tuples) so the caller can
-    materialize without depending on HogQL's response type.
+    materialize without depending on HogQL's response type. Sort, pagination,
+    and fill-fraction are computed in SQL — the caller materialises the page
+    directly without any in-Python re-sort.
     """
     # Sentinel for the no-compare case: an unsatisfiable window so the *MergeIf
     # aggregates return 0 / NaN for the "previous" columns without changing shape.
@@ -376,7 +444,14 @@ def execute_read_query(
         "prev_start": ast.Constant(value=prev_start),
         "prev_end": ast.Constant(value=prev_end),
         "breakdown_expr": runner._apply_path_cleaning(ast.Field(chain=["breakdown_value"])),
+        "fill_fraction_expr": _fill_fraction_expr(sort_column),
     }
+
+    parsed = parse_select(_READ_SQL_TEMPLATE, placeholders=placeholders)
+    assert isinstance(parsed, ast.SelectQuery), "lazy paths read template must parse to a SelectQuery"
+    parsed.order_by = _build_order_by(sort_column, sort_direction)
+    parsed.limit = ast.Constant(value=limit)
+    parsed.offset = ast.Constant(value=offset)
 
     # The precomputed `time_window_start` column is UTC; `convertToProjectTimezone`
     # would wrap it in `toTimeZone(..., team_tz)` and break the direct comparison
@@ -387,11 +462,10 @@ def execute_read_query(
     tag_queries(product=Product.WEB_ANALYTICS, feature=Feature.QUERY, query_type="web_stats_paths_lazy_query")
     response = execute_hogql_query(
         query_type="web_stats_paths_lazy_query",
-        query=_READ_SQL_TEMPLATE,
+        query=parsed,
         team=runner.team,
         timings=runner.timings,
         modifiers=modifiers,
-        placeholders=placeholders,
         limit_context=runner.limit_context,
     )
     return list(response.results or [])
@@ -399,12 +473,21 @@ def execute_read_query(
 
 def execute_lazy_precomputed_read(
     runner: "WebStatsTableQueryRunner",
+    *,
+    sort_column: str,
+    sort_direction: str,
+    limit: int,
+    offset: int,
 ) -> Optional[list[tuple]]:
     """Orchestrate the lazy precompute + read. Returns the list of result rows,
     or None on any failure (caller falls through to the v2/raw path).
 
-    Each row is ``(breakdown_value, visitors, prev_visitors, views, prev_views,
-    bounce_rate, prev_bounce_rate)``.
+    Sort/limit/offset are applied in SQL — `rows` already contains exactly the
+    paginated page in the user's requested order. Each row is
+    ``(breakdown_value, visitors, prev_visitors, views, prev_views,
+    bounce_rate, prev_bounce_rate, fill_fraction)``.
+
+    The caller fetches `limit + 1` to detect `hasMore`.
     """
     tag_queries(product=Product.WEB_ANALYTICS, feature=Feature.QUERY)
     team_id = runner.team.pk
@@ -516,6 +599,10 @@ def execute_lazy_precomputed_read(
             current_end_utc=current_end_utc,
             previous_start_utc=previous_start_utc,
             previous_end_utc=previous_end_utc,
+            sort_column=sort_column,
+            sort_direction=sort_direction,
+            limit=limit,
+            offset=offset,
         )
         read_duration_ms = int((time.perf_counter() - read_started) * 1000)
         total_duration_ms = int((time.perf_counter() - overall_started) * 1000)
@@ -524,13 +611,6 @@ def execute_lazy_precomputed_read(
         WEB_STATS_PATHS_LAZY_ROWS.observe(rows_returned)
         if rows_returned == 0:
             WEB_STATS_PATHS_LAZY_EMPTY.inc()
-        if rows_returned >= READ_MAX_ROWS:
-            logger.warning(
-                "web_stats_paths_lazy_precompute_row_cap_hit",
-                team_id=team_id,
-                rows_returned=rows_returned,
-                cap=READ_MAX_ROWS,
-            )
         logger.info(
             "web_stats_paths_lazy_precompute_completed",
             team_id=team_id,
