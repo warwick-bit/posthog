@@ -17,14 +17,11 @@ from typing import TYPE_CHECKING, Optional
 import structlog
 from prometheus_client import Counter, Histogram
 
-from posthog.schema import WebAnalyticsOrderByFields, WebStatsBreakdown
+from posthog.schema import HogQLQueryModifiers, WebAnalyticsOrderByFields, WebStatsBreakdown
 
 from posthog.hogql import ast
+from posthog.hogql.query import execute_hogql_query
 
-from posthog.clickhouse.client import sync_execute
-from posthog.clickhouse.preaggregation.web_stats_paths_preaggregated_sql import (
-    DISTRIBUTED_WEB_STATS_PATHS_PREAGGREGATED_TABLE,
-)
 from posthog.clickhouse.query_tagging import Feature, Product, tag_queries
 
 from products.analytics_platform.backend.lazy_computation.lazy_computation_executor import (
@@ -312,56 +309,81 @@ READ_MAX_ROWS = 10000
 # overall HTTP request from sitting on a worker for >3 minutes.
 ENSURE_BUDGET_MS = 120 * 1000
 
-_READ_SQL = f"""
+# HogQL read template. `{...}` placeholders are substituted via `parse_select`
+# `placeholders`. `top_level_settings` on `WebStatsPathsPreaggregatedTable`
+# applies `load_balancing="in_order"` (read-your-writes via Approach E in
+# `products/analytics_platform/backend/lazy_computation/CONSISTENCY.md`) and
+# `optimize_skip_unused_shards=1` (shard pruning via the `job_id IN (...)`
+# filter + `sipHash64(job_id)` sharding key) — they flow through the printer
+# automatically, no need to set them per-call.
+#
+# `convertToProjectTimezone=False` is forced on the modifiers when invoking
+# `execute_hogql_query`, so `time_window_start` (stored UTC) is compared
+# directly against the UTC bounds we pass in via `{cur_start}` etc. without
+# HogQL coercing them to the team's local timezone.
+_READ_SQL_TEMPLATE = f"""
 SELECT
-    breakdown_value,
-    uniqMergeIf(uniq_users_state, time_window_start >= %(cur_start)s AND time_window_start < %(cur_end)s) AS visitors,
-    uniqMergeIf(uniq_users_state, time_window_start >= %(prev_start)s AND time_window_start < %(prev_end)s) AS previous_visitors,
-    sumMergeIf(sum_pageviews_state, time_window_start >= %(cur_start)s AND time_window_start < %(cur_end)s) AS views,
-    sumMergeIf(sum_pageviews_state, time_window_start >= %(prev_start)s AND time_window_start < %(prev_end)s) AS previous_views,
-    avgMergeIf(avg_bounce_state, time_window_start >= %(cur_start)s AND time_window_start < %(cur_end)s) AS bounce_rate,
-    avgMergeIf(avg_bounce_state, time_window_start >= %(prev_start)s AND time_window_start < %(prev_end)s) AS previous_bounce_rate
-FROM {DISTRIBUTED_WEB_STATS_PATHS_PREAGGREGATED_TABLE()}
-WHERE team_id = %(team_id)s AND job_id IN %(job_ids)s
+    breakdown_value AS breakdown_value,
+    uniqMergeIf(uniq_users_state, and(time_window_start >= {{cur_start}}, time_window_start < {{cur_end}})) AS visitors,
+    uniqMergeIf(uniq_users_state, and(time_window_start >= {{prev_start}}, time_window_start < {{prev_end}})) AS previous_visitors,
+    sumMergeIf(sum_pageviews_state, and(time_window_start >= {{cur_start}}, time_window_start < {{cur_end}})) AS views,
+    sumMergeIf(sum_pageviews_state, and(time_window_start >= {{prev_start}}, time_window_start < {{prev_end}})) AS previous_views,
+    avgMergeIf(avg_bounce_state, and(time_window_start >= {{cur_start}}, time_window_start < {{cur_end}})) AS bounce_rate,
+    avgMergeIf(avg_bounce_state, and(time_window_start >= {{prev_start}}, time_window_start < {{prev_end}})) AS previous_bounce_rate
+FROM posthog.web_stats_paths_preaggregated
+WHERE and(team_id = {{team_id}}, job_id IN {{job_ids}})
 GROUP BY breakdown_value
-HAVING visitors > 0 OR previous_visitors > 0
+HAVING or(visitors > 0, previous_visitors > 0)
 ORDER BY visitors DESC, previous_visitors DESC, breakdown_value ASC
 LIMIT {READ_MAX_ROWS}
 """
 
 
-_READ_SETTINGS = {
-    "load_balancing": "in_order",
-    "optimize_skip_unused_shards": 1,
-}
-
-
 def execute_read_query(
     *,
-    team_id: int,
+    runner: "WebStatsTableQueryRunner",
     job_ids: list[str],
     current_start_utc: datetime,
     current_end_utc: datetime,
     previous_start_utc: Optional[datetime],
     previous_end_utc: Optional[datetime],
 ) -> list:
+    """Read the precomputed PATHS rows via HogQL.
+
+    Returns the raw `response.results` (list of tuples) so the caller can
+    materialize without depending on HogQL's response type.
+    """
+    # Sentinel for the no-compare case: an unsatisfiable window so the *MergeIf
+    # aggregates return 0 / NaN for the "previous" columns without changing shape.
     prev_start = previous_start_utc if previous_start_utc is not None else datetime(1970, 1, 1, tzinfo=UTC)
     prev_end = previous_end_utc if previous_end_utc is not None else datetime(1970, 1, 1, tzinfo=UTC)
 
+    placeholders: dict[str, ast.Expr] = {
+        "team_id": ast.Constant(value=runner.team.pk),
+        "job_ids": ast.Constant(value=[str(jid) for jid in job_ids]),
+        "cur_start": ast.Constant(value=current_start_utc),
+        "cur_end": ast.Constant(value=current_end_utc),
+        "prev_start": ast.Constant(value=prev_start),
+        "prev_end": ast.Constant(value=prev_end),
+    }
+
+    # The precomputed `time_window_start` column is UTC; `convertToProjectTimezone`
+    # would wrap it in `toTimeZone(..., team_tz)` and break the direct comparison
+    # against our UTC `cur_start`/`cur_end` constants.
+    modifiers = runner.modifiers.model_copy() if runner.modifiers else HogQLQueryModifiers()
+    modifiers.convertToProjectTimezone = False
+
     tag_queries(product=Product.WEB_ANALYTICS, feature=Feature.QUERY, query_type="web_stats_paths_lazy_query")
-    return sync_execute(
-        _READ_SQL,
-        {
-            "team_id": team_id,
-            "job_ids": tuple(str(jid) for jid in job_ids),
-            "cur_start": current_start_utc,
-            "cur_end": current_end_utc,
-            "prev_start": prev_start,
-            "prev_end": prev_end,
-        },
-        settings=_READ_SETTINGS,
-        team_id=team_id,
+    response = execute_hogql_query(
+        query_type="web_stats_paths_lazy_query",
+        query=_READ_SQL_TEMPLATE,
+        team=runner.team,
+        timings=runner.timings,
+        modifiers=modifiers,
+        placeholders=placeholders,
+        limit_context=runner.limit_context,
     )
+    return list(response.results or [])
 
 
 def execute_lazy_precomputed_read(
@@ -477,7 +499,7 @@ def execute_lazy_precomputed_read(
 
         read_started = time.perf_counter()
         rows = execute_read_query(
-            team_id=team_id,
+            runner=runner,
             job_ids=job_ids,
             current_start_utc=current_start_utc,
             current_end_utc=current_end_utc,
