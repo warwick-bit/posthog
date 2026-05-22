@@ -352,7 +352,9 @@ class TestWebStatsPathsLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
         # empty rows despite READY job on CI. Skipped until the read-after-write
         # visibility issue tracked alongside #59075 is resolved.
         self.skipTest("Flaky on CI since #59075 — lazy path returns empty rows despite READY job.")
-        self.team.timezone = team_tz
+        # mypy reads `skipTest` as `NoReturn`, but the test body must remain so
+        # the test runs once the underlying flake is fixed.
+        self.team.timezone = team_tz  # type: ignore[unreachable]
         self.team.save()
         self._seed_two_sessions()
 

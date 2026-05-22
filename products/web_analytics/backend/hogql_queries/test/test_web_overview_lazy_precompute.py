@@ -360,7 +360,9 @@ class TestWebOverviewLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
         # methods on CI's pytest version, so each variant has to opt out by itself.
         # Same root cause as `test_lazy_result_matches_raw_result` (#59075 flakiness).
         self.skipTest("Flaky on CI since #59075 — same root cause as test_lazy_result_matches_raw_result.")
-        self.team.timezone = team_tz
+        # mypy reads `skipTest` as `NoReturn`, but the test body must remain so
+        # the test runs once the underlying flake is fixed.
+        self.team.timezone = team_tz  # type: ignore[unreachable]
         self.team.save()
         self._seed_two_sessions()
 
@@ -532,7 +534,9 @@ class TestWebOverviewLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
         # The stale precomputed row stays in ClickHouse with the old job_id;
         # the new read passes the new job_id, so ReplacingMergeTree partitioning
         # by job_id naturally isolates the runs.
-        session_id = str(uuid7("2024-01-02"))
+        # mypy reads `skipTest` as `NoReturn`, but the body must stay for when
+        # the underlying TTL race is resolved.
+        session_id = str(uuid7("2024-01-02"))  # type: ignore[unreachable]
         _create_person(team_id=self.team.pk, distinct_ids=["recompute_p1"], properties={"name": "recompute_p1"})
         _create_event(
             team=self.team,
