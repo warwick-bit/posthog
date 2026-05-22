@@ -39,7 +39,7 @@ class TestWebOverviewLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
         # team. Outside this context manager the default `posthoganalytics.feature_enabled`
         # returns False (no API key in tests), which models a flag-disabled org.
         return patch(
-            "products.web_analytics.backend.hogql_queries.web_overview_lazy_precompute.posthoganalytics.feature_enabled",
+            "products.web_analytics.backend.hogql_queries.web_lazy_precompute_common.posthoganalytics.feature_enabled",
             return_value=True,
         )
 

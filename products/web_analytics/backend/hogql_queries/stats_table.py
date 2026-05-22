@@ -1,3 +1,4 @@
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal, Optional, Union, cast
@@ -39,9 +40,21 @@ from products.web_analytics.backend.hogql_queries.stats_table_strategies import 
     StatsTableQueryStrategy,
 )
 from products.web_analytics.backend.hogql_queries.web_analytics_query_runner import WebAnalyticsQueryRunner, map_columns
+from products.web_analytics.backend.hogql_queries.web_stats_paths_lazy_precompute import (
+    can_use_lazy_precompute as can_use_paths_lazy_precompute,
+    execute_lazy_precomputed_read as execute_paths_lazy_precomputed_read,
+)
 
 BREAKDOWN_NULL_DISPLAY = "(none)"
 BREAKDOWN_REFERRER_PREFIX = "referrer:"
+
+
+def _none_if_nan(value):
+    """avgMergeIf returns NaN for empty windows; replace with None so the
+    response stays valid JSON and downstream comparators handle it uniformly."""
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    return value
 
 
 @dataclass(frozen=True)
@@ -352,7 +365,141 @@ class WebStatsTableQueryRunner(WebAnalyticsQueryRunner[WebStatsTableQueryRespons
         properties = self.query.properties + self._test_account_filters
         return property_to_expr(properties, team=self.team)
 
+    def _maybe_calculate_via_lazy_precompute(self) -> Optional[WebStatsTableQueryResponse]:
+        """Short-circuit through the PATHS lazy precompute table when eligible.
+
+        Returns None when ineligible or on any failure, in which case the caller
+        falls through to the v2/raw HogQL path.
+        """
+        if not can_use_paths_lazy_precompute(self):
+            return None
+        rows = execute_paths_lazy_precomputed_read(self)
+        if rows is None:
+            return None
+        self.used_preaggregated_tables = True
+        return self._build_response_from_lazy_rows(rows)
+
+    def _build_response_from_lazy_rows(self, rows: list[tuple]) -> WebStatsTableQueryResponse:
+        """Translate raw precomputed rows into the shape ``PathBounceStrategy``
+        produces: ordered, paginated, fill-fraction'd, with the cross-sell column."""
+        include_previous = bool(self.query_compare_to_date_range)
+        sort_field, sort_direction = self._resolve_sort_field()
+
+        materialized = []
+        for row in rows:
+            breakdown_value, visitors, prev_visitors, views, prev_views, bounce_rate, prev_bounce_rate = row
+            # `avgMergeIf` returns NaN when the window has no contributing rows.
+            # Normalize NaN → None so JSON serialization stays valid and the sort
+            # comparator's `is None` check catches it.
+            bounce_rate = _none_if_nan(bounce_rate)
+            prev_bounce_rate = _none_if_nan(prev_bounce_rate)
+            materialized.append(
+                {
+                    "breakdown_value": breakdown_value,
+                    "visitors": (visitors, prev_visitors if include_previous else None),
+                    "views": (views, prev_views if include_previous else None),
+                    "bounce_rate": (bounce_rate, prev_bounce_rate if include_previous else None),
+                }
+            )
+
+        # Stable two-pass sort: nulls always at the end regardless of direction,
+        # breakdown_value tiebreaker always ASC. Python's sort is stable, so
+        # sorting by breakdown_value first then by the primary key preserves the
+        # tiebreaker ordering for equal primary values.
+        reverse = sort_direction == "DESC"
+        not_none = [r for r in materialized if r[sort_field][0] is not None]
+        none_rows = [r for r in materialized if r[sort_field][0] is None]
+        not_none.sort(key=lambda r: r["breakdown_value"])
+        not_none.sort(key=lambda r: r[sort_field][0], reverse=reverse)
+        none_rows.sort(key=lambda r: r["breakdown_value"])
+        materialized = not_none + none_rows
+
+        # Fill fraction: matches `_fill_fraction` logic. visitors/views use
+        # ratio-of-sum; bounce_rate is already a fraction. We compute it for
+        # the unpaginated set so the fraction reflects the whole result.
+        fill_fractions = self._compute_fill_fractions(materialized, sort_field)
+
+        # Paginate: limit+1 lookahead to determine hasMore.
+        limit = self.paginator.limit
+        offset = self.paginator.offset or 0
+        window = materialized[offset : offset + limit + 1]
+        has_more = len(window) > limit
+        page = window[:limit]
+
+        results = []
+        for idx, r in enumerate(page):
+            results.append(
+                [
+                    r["breakdown_value"],
+                    r["visitors"],
+                    r["views"],
+                    r["bounce_rate"],
+                    fill_fractions[offset + idx] if offset + idx < len(fill_fractions) else 0.0,
+                    "",  # cross_sell placeholder
+                ]
+            )
+
+        columns = [
+            "context.columns.breakdown_value",
+            "context.columns.visitors",
+            "context.columns.views",
+            "context.columns.bounce_rate",
+            "context.columns.ui_fill_fraction",
+            "context.columns.cross_sell",
+        ]
+
+        return WebStatsTableQueryResponse(
+            columns=columns,
+            results=results,
+            modifiers=self.modifiers,
+            usedPreAggregatedTables=True,
+            usedLazyPrecompute=True,
+            hasMore=has_more,
+            limit=limit,
+            offset=offset,
+        )
+
+    def _resolve_sort_field(self) -> tuple[str, Literal["ASC", "DESC"]]:
+        """Pick the dict key to sort the precomputed rows by, plus direction.
+
+        Mirrors `_order_by` but operates on the in-memory dict shape. Defaults
+        to visitors DESC (which matches the SQL fallthrough).
+        """
+        direction: Literal["ASC", "DESC"] = "DESC"
+        field = "visitors"
+        if self.query.orderBy:
+            order_field = cast(WebAnalyticsOrderByFields, self.query.orderBy[0])
+            order_dir = cast(WebAnalyticsOrderByDirection, self.query.orderBy[1])
+            direction = cast(Literal["ASC", "DESC"], order_dir.value)
+            if order_field == WebAnalyticsOrderByFields.VISITORS:
+                field = "visitors"
+            elif order_field == WebAnalyticsOrderByFields.VIEWS:
+                field = "views"
+            elif order_field == WebAnalyticsOrderByFields.BOUNCE_RATE:
+                field = "bounce_rate"
+            # Other order fields aren't surfaced by the PATHS lazy response —
+            # fall back to visitors DESC.
+        return field, direction
+
+    @staticmethod
+    def _compute_fill_fractions(materialized: list[dict], sort_field: str) -> list[float]:
+        """Return a per-row fraction matching `_fill_fraction`:
+        - visitors/views: row / sum(row) over the full result
+        - bounce_rate: passthrough (already a fraction)
+        """
+        values = [r[sort_field][0] or 0 for r in materialized]
+        if sort_field == "bounce_rate":
+            return [float(v) for v in values]
+        total = sum(values)
+        if total == 0:
+            return [0.0 for _ in values]
+        return [float(v) / total for v in values]
+
     def _calculate(self):
+        lazy_response = self._maybe_calculate_via_lazy_precompute()
+        if lazy_response is not None:
+            return lazy_response
+
         query = self.to_query()
 
         # Pre-aggregated tables store data in UTC **buckets**, so we need to disable timezone conversion

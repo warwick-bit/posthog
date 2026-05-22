@@ -1410,6 +1410,7 @@ export const webAnalyticsLogic = kea<webAnalyticsLogicType>([
                                               includeHost: includeHostPath,
                                               includeAvgTimeOnPage:
                                                   !!featureFlags[FEATURE_FLAGS.AVERAGE_PAGE_VIEW_COLUMN],
+                                              useWebAnalyticsPrecompute,
                                           },
                                           {
                                               ...pathTabExtras,
