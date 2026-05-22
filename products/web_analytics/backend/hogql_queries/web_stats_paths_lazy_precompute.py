@@ -103,10 +103,6 @@ class ScrollDepthUnsupported(LazyPrecomputeIneligible):
     pass
 
 
-class PathCleaningUnsupported(LazyPrecomputeIneligible):
-    pass
-
-
 class UnsupportedOrderBy(LazyPrecomputeIneligible):
     def __init__(self, field: object):
         self.field = field
@@ -148,11 +144,6 @@ def _check_eligible(runner: "WebStatsTableQueryRunner") -> None:
         raise AvgTimeOnPageUnsupported()
     if query.includeScrollDepth:
         raise ScrollDepthUnsupported()
-    # Path cleaning would require hashing the team's cleaning rules into the
-    # cache key and would invalidate the entire precompute on rule edits.
-    # Reject for MVP — see PRECOMPUTATION.md for follow-up.
-    if query.doPathCleaning:
-        raise PathCleaningUnsupported()
     # Refuse order-by fields the lazy response doesn't produce. The in-Python
     # sort otherwise silently rewrites to `visitors`, producing different rows
     # than the raw path's `_order_by` would for the same query.
@@ -188,8 +179,13 @@ def _prepend_host_nullif_empty(host_expr: ast.Expr, path_expr: ast.Expr) -> ast.
 
 
 def _breakdown_value_expr(runner: "WebStatsTableQueryRunner") -> ast.Expr:
-    """URL path (optionally `host`-prefixed) for the per-pathname rows."""
-    path = ast.Field(chain=["events", "properties", "$pathname"])
+    """URL path (optionally `host`-prefixed) for the per-pathname rows.
+
+    When `doPathCleaning` is on, the cleaning regex is baked into the AST via
+    `runner._apply_path_cleaning`, so the query_hash differs between cleaned
+    and raw — cleaned/raw precomputes coexist as distinct rows and a rule edit
+    naturally produces a new hash (no manual cache invalidation needed)."""
+    path = runner._apply_path_cleaning(ast.Field(chain=["events", "properties", "$pathname"]))
     if runner.query.includeHost:
         return _prepend_host_nullif_empty(ast.Field(chain=["events", "properties", "$host"]), path)
     return path
@@ -199,7 +195,7 @@ def _entry_breakdown_value_expr(runner: "WebStatsTableQueryRunner") -> ast.Expr:
     """Entry pathname (optionally `entry_hostname`-prefixed) — must match the
     same shape as `_breakdown_value_expr` so the equality check inside the
     INSERT properly identifies sessions that entered on each path."""
-    path = ast.Field(chain=["session", "$entry_pathname"])
+    path = runner._apply_path_cleaning(ast.Field(chain=["session", "$entry_pathname"]))
     if runner.query.includeHost:
         return _prepend_host_nullif_empty(ast.Field(chain=["session", "$entry_hostname"]), path)
     return path

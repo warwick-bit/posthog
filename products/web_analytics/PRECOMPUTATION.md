@@ -172,7 +172,6 @@ The state is `Nullable(Float64)` so the `if(..., NULL)` expression in the INSERT
 - `query.includeBounceRate` is False (the lazy table is purpose-built for bounce-augmented paths)
 - `query.includeAvgTimeOnPage` is True (not yet wired)
 - `query.includeScrollDepth` is True (not yet wired)
-- `query.doPathCleaning` is True (team cleaning rules would need to flow into the cache key)
 
 ### Read path
 
@@ -181,7 +180,6 @@ Single `sync_execute` over `web_stats_paths_preaggregated` with `uniqMergeIf` / 
 ### Known follow-ups
 
 - INITIAL_PAGE + bounce (entry-pathname tab) is a different SQL shape — separate precompute table or shared one with an entry-only state column.
-- Path cleaning support — admit `doPathCleaning=True` by hashing the team's cleaning rules into the cache key.
 - `usedLazyPrecompute` is set on the response; the frontend's `PreAggregatedBadge` already keys off `usedPreAggregatedTables` so users see the badge without further wiring. Distinguishing lazy from v2 in the UI is a separate follow-up.
 
 ## Related code
