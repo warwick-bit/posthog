@@ -690,7 +690,6 @@ class AssistantTool(StrEnum):
     FIX_HOGQL_QUERY = "fix_hogql_query"
     ANALYZE_USER_INTERVIEWS = "analyze_user_interviews"
     CREATE_USER_INTERVIEW_TOPIC = "create_user_interview_topic"
-    GENERATE_TEST_INTERVIEW_LINK = "generate_test_interview_link"
     CREATE_HOG_TRANSFORMATION_FUNCTION = "create_hog_transformation_function"
     CREATE_HOG_FUNCTION_FILTERS = "create_hog_function_filters"
     CREATE_HOG_FUNCTION_INPUTS = "create_hog_function_inputs"
@@ -2585,6 +2584,15 @@ class MaterializationMode(StrEnum):
 class MaterializedColumnsOptimizationMode(StrEnum):
     DISABLED = "disabled"
     OPTIMIZED = "optimized"
+
+
+class ParserMode(StrEnum):
+    CPP_ONLY = "cpp_only"
+    CPP_WITH_RUST_SHADOW = "cpp_with_rust_shadow"
+    RUST_WITH_CPP_SHADOW = "rust_with_cpp_shadow"
+    RUST_ONLY = "rust_only"
+    RUST_PY_ONLY = "rust_py_only"
+    RUST_PY_WITH_CPP_SHADOW = "rust_py_with_cpp_shadow"
 
 
 class PersonsArgMaxVersion(StrEnum):
@@ -7301,6 +7309,16 @@ class HogQLQueryModifiers(BaseModel):
     materializedColumnsOptimizationMode: MaterializedColumnsOptimizationMode | None = None
     optimizeJoinedFilters: bool | None = None
     optimizeProjections: bool | None = None
+    parserMode: ParserMode | None = Field(
+        default=None,
+        description=(
+            "HogQL parser backend; absent → `cpp_only`. `*_shadow` modes return the"
+            " primary result and sample-compare against the other parser, reporting"
+            " divergences without failing the request. The `rust_py_*` modes drive the"
+            " same hand-rolled Rust parser as `rust_*` but build `posthog.hogql.ast`"
+            " dataclass instances directly via PyO3, skipping the JSON round-trip."
+        ),
+    )
     personsArgMaxVersion: PersonsArgMaxVersion | None = None
     personsJoinMode: PersonsJoinMode | None = None
     personsOnEventsMode: PersonsOnEventsMode | None = None
@@ -17980,6 +17998,13 @@ class RetentionFilter(BaseModel):
         default=AggregationType.COUNT,
         description="The aggregation type to use for retention",
     )
+    cohortLabelStartIndex: int | None = Field(
+        default=0,
+        description=(
+            "Starting index used when labeling cohort columns (e.g. 0 for D0/D1/D2, 1"
+            " for D1/D2/D3). Display-only — does not affect retention calculations."
+        ),
+    )
     cumulative: bool | None = None
     customAggregationTarget: bool | None = Field(
         default=None,
@@ -18703,8 +18728,8 @@ class WebOverviewQuery(BaseModel):
         default=None,
         description=(
             "Opt this specific query into the web_overview_query precompute path."
-            " Requires the team to be in the `WEB_ANALYTICS_LAZY_PRECOMPUTE_TEAM_IDS`"
-            " allowlist for the gate to pass. *"
+            " Requires the `web-analytics-precompute-toggle` PostHog feature flag to be"
+            " on for the team's organization for the gate to pass. *"
         ),
     )
     version: float | None = Field(default=None, description="version of the node, used for schema migrations")
