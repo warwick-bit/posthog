@@ -12,6 +12,12 @@ from posthog.clickhouse.preaggregation.web_overview_preaggregated_sql import (
     DISTRIBUTED_WEB_OVERVIEW_PREAGGREGATED_TABLE,
 )
 from posthog.clickhouse.query_tagging import Feature, Product, tag_queries
+
+from products.analytics_platform.backend.lazy_computation.lazy_computation_executor import (
+    LazyComputationResult,
+    LazyComputationTable,
+    ensure_precomputed,
+)
 from products.web_analytics.backend.hogql_queries.web_lazy_precompute_common import (
     LAZY_TTL_SECONDS,
     SESSION_FORWARD_PAD_MINUTES,
@@ -22,12 +28,6 @@ from products.web_analytics.backend.hogql_queries.web_lazy_precompute_common imp
     host_filter_expr,
     log_eligibility_outcome,
     test_account_filter_expr,
-)
-
-from products.analytics_platform.backend.lazy_computation.lazy_computation_executor import (
-    LazyComputationResult,
-    LazyComputationTable,
-    ensure_precomputed,
 )
 
 if TYPE_CHECKING:

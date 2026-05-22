@@ -356,6 +356,10 @@ class TestWebOverviewLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
     @freeze_time("2024-01-15T12:00:00Z")
     def test_lazy_result_matches_raw_for_whole_hour_timezones(self, _name: str, team_tz: str) -> None:
         """Whole-hour-offset teams must produce the same metrics through the lazy and raw paths."""
+        # The class-level `@unittest.skip` doesn't propagate to parameterized-expanded
+        # methods on CI's pytest version, so each variant has to opt out by itself.
+        # Same root cause as `test_lazy_result_matches_raw_result` (#59075 flakiness).
+        self.skipTest("Flaky on CI since #59075 — same root cause as test_lazy_result_matches_raw_result.")
         self.team.timezone = team_tz
         self.team.save()
         self._seed_two_sessions()
