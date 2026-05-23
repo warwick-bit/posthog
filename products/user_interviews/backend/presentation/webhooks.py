@@ -424,7 +424,7 @@ def vapi_webhook(request: Request) -> Response:
     )
     call_id = call.get("id")
     is_test_call = bool(top_metadata.get("is_test") or overrides_metadata.get("is_test")) or (
-        bool(access_token) and access_token.startswith("test-")
+        isinstance(access_token, str) and access_token.startswith("test-")
     )
 
     if message_type == "status-update":

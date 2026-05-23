@@ -557,6 +557,20 @@ export const TOOL_DEFINITIONS: Record<AssistantTool, ToolDefinition> = {
             return 'Setting up interview topic...'
         },
     },
+    generate_test_interview_link: {
+        name: 'Get test interview link',
+        description: 'Get a synthetic test interview link for a topic so you can dogfood the voice flow',
+        product: Scene.UserInterviews,
+        flag: FEATURE_FLAGS.USER_INTERVIEWS,
+        icon: iconForType('user_interview'),
+        modes: [AgentMode.UserInterview],
+        displayFormatter: (toolCall) => {
+            if (toolCall.status === 'completed') {
+                return 'Got test interview link'
+            }
+            return 'Getting test interview link...'
+        },
+    },
     create_hog_function_filters: {
         name: 'Set up function filters',
         description: 'Set up function filters for quick pipeline configuration',
