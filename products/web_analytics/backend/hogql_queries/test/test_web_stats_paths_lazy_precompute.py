@@ -282,12 +282,39 @@ class TestWebStatsPathsLazyPrecompute(ClickhouseTestMixin, APIBaseTest):
         assert PreaggregationJob.objects.filter(team_id=self.team.pk).count() == 0
 
     @freeze_time("2024-01-15T12:00:00Z")
-    def test_initial_page_breakdown_falls_through(self):
-        # Only the PAGE breakdown is wired through the lazy table for MVP.
-        # INITIAL_PAGE+bounce uses a different SQL shape and is left for a follow-up.
+    def test_initial_page_breakdown_uses_lazy_path(self):
+        # INITIAL_PAGE reuses the same precompute table: feeding
+        # `_entry_breakdown_value_expr` into both placeholders collapses the
+        # inner GROUP BY to per-session, so the outer aggregate is "sessions
+        # that entered on this path" — matching v2's INITIAL_PAGE semantic.
+        # The AST differs from PAGE, so the cache key (query_hash) differs and
+        # the two breakdowns coexist as distinct jobs.
+        self._seed_two_sessions()
         with self._enable_lazy():
             self._run(self._build_query(breakdown_by=WebStatsBreakdown.INITIAL_PAGE))
-        assert PreaggregationJob.objects.filter(team_id=self.team.pk).count() == 0
+        assert PreaggregationJob.objects.filter(team_id=self.team.pk).count() > 0
+
+    @freeze_time("2024-01-15T12:00:00Z")
+    def test_page_and_initial_page_get_distinct_cache_entries(self):
+        # Defence-in-depth: a team toggling between Path / Entry path tabs must
+        # produce different precompute jobs. If the AST collapses (e.g., a
+        # future refactor uses the same placeholder by accident), both
+        # breakdowns would share rows and the entry-path bounce numbers would
+        # be wrong for the path tile (and vice versa).
+        self._seed_two_sessions()
+        with self._enable_lazy():
+            self._run(self._build_query(breakdown_by=WebStatsBreakdown.PAGE))
+            page_hashes = {str(j.query_hash) for j in PreaggregationJob.objects.filter(team_id=self.team.pk)}
+            PreaggregationJob.objects.filter(team_id=self.team.pk).delete()
+
+            self._run(self._build_query(breakdown_by=WebStatsBreakdown.INITIAL_PAGE))
+            initial_page_hashes = {str(j.query_hash) for j in PreaggregationJob.objects.filter(team_id=self.team.pk)}
+
+        assert page_hashes and initial_page_hashes, "both breakdowns should create jobs"
+        assert page_hashes.isdisjoint(initial_page_hashes), (
+            f"PAGE and INITIAL_PAGE breakdowns must produce distinct cache keys, "
+            f"got overlap: {page_hashes & initial_page_hashes}"
+        )
 
     @freeze_time("2024-01-15T12:00:00Z")
     def test_missing_include_bounce_rate_falls_through(self):

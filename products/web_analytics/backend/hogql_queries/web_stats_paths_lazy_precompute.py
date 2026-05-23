@@ -137,7 +137,7 @@ def _check_eligible(runner: "WebStatsTableQueryRunner") -> None:
     # Path tile-specific checks first: cheaper than the org flag round-trip and
     # rejecting other tile shapes here means a single team-level flag still
     # allows overview/paths to opt in independently per query.
-    if query.breakdownBy != WebStatsBreakdown.PAGE:
+    if query.breakdownBy not in (WebStatsBreakdown.PAGE, WebStatsBreakdown.INITIAL_PAGE):
         raise WrongBreakdown(f"breakdownBy={query.breakdownBy!r}")
     if not query.includeBounceRate:
         raise MissingBounceRate()
@@ -180,12 +180,27 @@ def _prepend_host_nullif_empty(host_expr: ast.Expr, path_expr: ast.Expr) -> ast.
 
 
 def _breakdown_value_expr(runner: "WebStatsTableQueryRunner") -> ast.Expr:
-    """URL path (optionally `host`-prefixed) for the per-pathname rows.
+    """The breakdown column for the precompute, per `runner.query.breakdownBy`:
+
+    - `PAGE`: event pathname (one row per touched path per session) — bounce
+      contributes only when this path matches the session's entry pathname,
+      via `equals(breakdown_value, entry_breakdown_value)` inside the INSERT.
+    - `INITIAL_PAGE`: session entry pathname — the inner `GROUP BY
+      (session_id, breakdown_value)` collapses to per-session (entry path is
+      constant within a session), so the outer aggregate is "sessions that
+      entered on this path". Bounce contributes for every row because
+      `breakdown_value == entry_breakdown_value` is always true.
 
     Path cleaning is applied at READ time (see `_READ_SQL_TEMPLATE`), not here.
     Storing raw paths keeps the precompute rule-independent: a team can edit
     their cleaning rules and the existing precomputed rows remain valid — the
-    next read just groups them by the new cleaned values."""
+    next read just groups them by the new cleaned values.
+
+    The cache key differentiates PAGE vs INITIAL_PAGE automatically: the AST
+    for each branch differs, so the lazy_computation `query_hash` differs and
+    the two precomputes coexist as distinct jobs."""
+    if runner.query.breakdownBy == WebStatsBreakdown.INITIAL_PAGE:
+        return _entry_breakdown_value_expr(runner)
     path = ast.Field(chain=["events", "properties", "$pathname"])
     if runner.query.includeHost:
         return _prepend_host_nullif_empty(ast.Field(chain=["events", "properties", "$host"]), path)
