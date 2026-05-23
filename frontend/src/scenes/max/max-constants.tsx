@@ -559,7 +559,7 @@ export const TOOL_DEFINITIONS: Record<AssistantTool, ToolDefinition> = {
     },
     generate_test_interview_link: {
         name: 'Get test interview link',
-        description: 'Get a synthetic test interview link for a topic so you can dogfood the voice flow',
+        description: 'Get test interview link for a topic so you can dogfood the voice flow',
         product: Scene.UserInterviews,
         flag: FEATURE_FLAGS.USER_INTERVIEWS,
         icon: iconForType('user_interview'),
