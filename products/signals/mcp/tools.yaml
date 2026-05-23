@@ -136,10 +136,10 @@ tools:
             newest non-expired cached profile or a freshly-built one. Read this once at the start of a run (right after
             `llma-skill-get`) to orient on the team in one tool call instead of paginating through
             `inbox-source-configs-list` / `inbox-reports-list` / `read-data-schema` / `activity-log-list`. Distinct from
-            `signals-scout-scratchpad-list`: profile is ground truth from authoritative tables; scratchpad is the
+            `signals-scout-scratchpad-search`: profile is ground truth from authoritative tables; scratchpad is the
             scout's inferred learnings.
-    signals-scout-runs-findings-create:
-        operation: signals_scout_runs_findings_create
+    signals-scout-emit-signal:
+        operation: signals_scout_emit_signal
         enabled: true
         scopes:
             - signal_scout_internal:write
@@ -179,8 +179,8 @@ tools:
         description: >
             Return the full `SignalScoutRun` row including `summary`, `findings`, `hypotheses_considered`,
             `run_metrics`, and `metadata`. Strictly team-scoped — a UUID belonging to another team returns 404.
-    signals-scout-scratchpad-create:
-        operation: signals_scout_scratchpad_create
+    signals-scout-scratchpad-remember:
+        operation: signals_scout_scratchpad_remember
         enabled: true
         scopes:
             - signal_scout_internal:write
@@ -188,12 +188,13 @@ tools:
             readOnly: false
             destructive: false
             idempotent: true
-        title: Write or refresh a scout memory
+        title: Remember a scratchpad entry
         description: >
-            Upsert a `scout_inference` memory keyed on `(team, key)`. Re-using a key updates the existing entry in place
-            and resets its TTL. Cannot overwrite `human_confirmed` entries.
-    signals-scout-scratchpad-delete:
-        operation: signals_scout_scratchpad_delete
+            Upsert a scratchpad entry keyed on `(team, key)` — re-using a key updates the existing entry in
+            place, so this is an upsert rather than a strict create. Optionally pass `run_id` to record which
+            run wrote it.
+    signals-scout-scratchpad-forget:
+        operation: signals_scout_scratchpad_forget
         enabled: true
         scopes:
             - signal_scout_internal:write
@@ -201,12 +202,12 @@ tools:
             readOnly: false
             destructive: true
             idempotent: true
-        title: Forget a scout memory by key
+        title: Forget a scratchpad entry by key
         description: >
-            Delete a `scout_inference` memory entry by key. Returns `deleted=false` if no row matched — the call is
-            idempotent. Cannot delete `human_confirmed` entries.
-    signals-scout-scratchpad-list:
-        operation: signals_scout_scratchpad_list
+            Delete a scratchpad entry by key. Returns `deleted=false` if no row matched — the call is
+            idempotent.
+    signals-scout-scratchpad-search:
+        operation: signals_scout_scratchpad_search
         enabled: true
         scopes:
             - signal_scout:read
@@ -217,8 +218,8 @@ tools:
         list: true
         title: Search the scout scratchpad
         description: >
-            Return `SignalScratchpad` entries for this project. ILIKE matches on `content`; tags filter via Postgres
-            array overlap. Expired `scout_inference` entries are hidden by default.
+            Return `SignalScratchpad` entries for this project, newest first. Pass `text` for a
+            case-insensitive substring match on the entry's `content` and `key`. Results capped at 100.
     users-signal-autonomy-create:
         operation: users_signal_autonomy_create
         enabled: false
