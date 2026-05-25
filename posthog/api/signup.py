@@ -18,6 +18,7 @@ import structlog
 import posthoganalytics
 from rest_framework import exceptions, generics, permissions, response, serializers, status
 from rest_framework.request import Request
+from social_core.exceptions import AuthException
 from social_core.pipeline.partial import partial
 from social_django.strategy import DjangoStrategy
 from webauthn.helpers import base64url_to_bytes
@@ -891,6 +892,35 @@ def process_social_domain_jit_provisioning_signup(
                 )
 
     return user
+
+
+def social_associate_user_by_active_email(backend, details, user=None, *args, **kwargs):
+    """
+    Drop-in replacement for ``social_core.pipeline.social_auth.associate_by_email`` that
+    only considers active users when matching an incoming SSO identity to an existing
+    account by email.
+
+    ``social_django``'s ``get_users_by_email`` matches case-insensitively but does not
+    filter on ``is_active``, so a user who has a deactivated case-variant duplicate (e.g. a
+    legacy ``John@x.com`` alongside their active ``john@x.com``) makes the stock step see
+    more than one match and raise "associated with another account" — locking them out of
+    SSO. Filtering to active users lets deactivating the redundant duplicate resolve the
+    match to a single account, which is our remediation path for the legacy mixed-case
+    accounts. Behaviour is otherwise identical to the upstream step.
+    """
+    if user:
+        return None
+
+    email = details.get("email")
+    if not email:
+        return None
+
+    users = [existing for existing in backend.strategy.storage.user.get_users_by_email(email) if existing.is_active]
+    if len(users) == 0:
+        return None
+    if len(users) > 1:
+        raise AuthException(backend, "The given email address is associated with another account")
+    return {"user": users[0], "is_new": False}
 
 
 @partial

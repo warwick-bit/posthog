@@ -18,8 +18,14 @@ from django.utils import timezone
 
 from parameterized import parameterized
 from rest_framework import status
+from social_core.exceptions import AuthException
+from social_django.models import UserSocialAuth
 
-from posthog.api.signup import _save_session_with_recovery, process_social_invite_signup
+from posthog.api.signup import (
+    _save_session_with_recovery,
+    process_social_invite_signup,
+    social_associate_user_by_active_email,
+)
 from posthog.cloud_utils import TEST_clear_instance_license_cache
 from posthog.constants import AvailableFeature
 from posthog.models import Organization, Team, User
@@ -3022,3 +3028,49 @@ class TestSignupResendInvite(APIBaseTest):
         # Bob still has a fresh bucket
         bob_ok = self.client.post("/api/signup/resend-invite", {"email": "bob@acme.com"})
         self.assertEqual(bob_ok.status_code, status.HTTP_200_OK)
+
+
+class TestSocialAssociateUserByActiveEmail(APIBaseTest):
+    def _backend(self):
+        backend = mock.MagicMock()
+        backend.name = "google-oauth2"
+        backend.strategy.storage.user = UserSocialAuth
+        return backend
+
+    def _make_user(self, email: str, *, is_active: bool = True) -> User:
+        # create_user lowercases the email, so write the exact casing afterwards via .update()
+        # to reproduce a legacy mixed-case row without going through normalization.
+        user = User.objects.create_user(email=email.lower(), password=None, first_name="T")
+        User.objects.filter(pk=user.pk).update(email=email, is_active=is_active)
+        user.refresh_from_db()
+        return user
+
+    def test_skips_when_user_already_resolved(self):
+        existing = self._make_user("taken@example.com")
+        result = social_associate_user_by_active_email(self._backend(), {"email": "taken@example.com"}, user=existing)
+        self.assertIsNone(result)
+
+    def test_returns_none_without_email(self):
+        self.assertIsNone(social_associate_user_by_active_email(self._backend(), {}))
+
+    def test_returns_none_when_no_match(self):
+        self.assertIsNone(social_associate_user_by_active_email(self._backend(), {"email": "nobody@example.com"}))
+
+    def test_matches_single_active_user(self):
+        user = self._make_user("solo@example.com")
+        result = social_associate_user_by_active_email(self._backend(), {"email": "solo@example.com"})
+        self.assertEqual(result, {"user": user, "is_new": False})
+
+    def test_ignores_inactive_case_variant(self):
+        # The active lowercase survivor is matched even though a deactivated capitalized
+        # duplicate shares the same email case-insensitively — this is the lockout fix.
+        active = self._make_user("john@example.com", is_active=True)
+        self._make_user("John@example.com", is_active=False)
+        result = social_associate_user_by_active_email(self._backend(), {"email": "John@example.com"})
+        self.assertEqual(result, {"user": active, "is_new": False})
+
+    def test_raises_when_multiple_active_case_variants(self):
+        self._make_user("amy@example.com", is_active=True)
+        self._make_user("Amy@example.com", is_active=True)
+        with self.assertRaises(AuthException):
+            social_associate_user_by_active_email(self._backend(), {"email": "amy@example.com"})
